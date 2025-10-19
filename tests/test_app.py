@@ -10,9 +10,12 @@ from typing import Any, List
 #             Mock Kubernetes Config at Import
 # ============================================================
 # Prevents tests from failing due to missing kube-config or cluster
-with (patch("kubernetes.config.load_incluster_config"),
-      patch("kubernetes.config.load_kube_config"),
-      patch("app.safe_list", return_value=[])):
+with patch("kubernetes.config.load_incluster_config"), \
+     patch("kubernetes.config.load_kube_config"), \
+     patch("app.safe_list", return_value=[]), \
+     patch("app.core.list_pod_for_all_namespaces", return_value=MagicMock(items=[])), \
+     patch("app.core.list_node", return_value=MagicMock(items=[])), \
+     patch("app.core.list_namespaced_deployment", return_value=MagicMock(items=[])):
     import app
 
 
