@@ -162,15 +162,6 @@ def get_configmaps():
     return pd.DataFrame(data)
 
 
-def get_secrets():
-    secrets = safe_list(core.list_secret_for_all_namespaces)
-    data = [{"namespace": s.metadata.namespace,
-             "name": s.metadata.name,
-             "type": s.type}
-            for s in secrets if not namespace_filter or s.metadata.namespace == namespace_filter]
-    return pd.DataFrame(data)
-
-
 def get_statefulsets():
     ss = safe_list(apps.list_stateful_set_for_all_namespaces)
     data = [{"namespace": s.metadata.namespace,
@@ -248,7 +239,6 @@ with tab_overview:
     deps_df = get_deployments()
     svc_df = get_services()
     cm_df = get_configmaps()
-    sec_df = get_secrets()
     ss_df = get_statefulsets()
     ds_df = get_daemonsets()
     jobs_df = get_jobs()
@@ -283,7 +273,7 @@ with tab_overview:
 with tab_resources:
     resource_type = st.selectbox("Select a resource", [
         "Pods", "Deployments", "Nodes", "StatefulSets", "DaemonSets",
-        "Services", "ConfigMaps", "Secrets", "Jobs", "CronJobs",
+        "Services", "ConfigMaps", "Jobs", "CronJobs",
         "PersistentVolumes", "PersistentVolumeClaims"
     ])
 
@@ -295,7 +285,6 @@ with tab_resources:
         "DaemonSets": ds_df,
         "Services": svc_df,
         "ConfigMaps": cm_df,
-        "Secrets": sec_df,
         "Jobs": jobs_df,
         "CronJobs": cron_df,
         "PersistentVolumes": pvs_df,
