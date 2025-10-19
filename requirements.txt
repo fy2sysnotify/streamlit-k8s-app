@@ -1,0 +1,5 @@
+streamlit
+kubernetes
+pandas
+plotly
+requests
