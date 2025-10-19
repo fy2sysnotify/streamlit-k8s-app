@@ -231,3 +231,4 @@ if manual_refresh:
     st.rerun()
 
 # TODO: check for Prometheus availability and show appropriate messages
+
