@@ -310,7 +310,7 @@ with tab_metrics:
 
     # CPU usage
     st.markdown("### 🔹 CPU Usage (cores per namespace)")
-    cpu_query = 'sum(rate(container_cpu_usage_seconds_total{image!=""}[5m])) by (namespace)'
+    cpu_query = 'sum by (namespace) (rate(container_cpu_usage_seconds_total{container!="",pod!=""}[5m]))'
     cpu_results = query_prometheus_range(prom_url, cpu_query, start, end, step)
     if cpu_results:
         df_cpu = pd.DataFrame([
