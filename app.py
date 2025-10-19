@@ -2,11 +2,10 @@ import streamlit as st
 import pandas as pd
 import requests
 import plotly.express as px
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, UTC
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 import time
-from datetime import datetime, UTC
 
 # --- Load Kubernetes config ---
 try:
@@ -16,6 +15,7 @@ except:
 
 core = client.CoreV1Api()
 apps = client.AppsV1Api()
+batch = client.BatchV1Api()
 
 # --- Streamlit config ---
 st.set_page_config(page_title="Kubernetes Dashboard", layout="wide")
@@ -93,21 +93,20 @@ def query_prometheus_range(prometheus_url, query, start, end, step):
         return []
 
 
-# --- Kubernetes data helpers ---
+# --- Kubernetes resource helpers ---
 def get_pods():
     pods = safe_list(core.list_pod_for_all_namespaces)
     data = []
     for p in pods:
-        m = p.metadata
-        ns = getattr(m, "namespace", "-")
+        ns = p.metadata.namespace
         if namespace_filter and ns != namespace_filter:
             continue
         data.append({
             "namespace": ns,
-            "name": m.name,
+            "name": p.metadata.name,
             "status": p.status.phase,
             "node": getattr(p.spec, "node_name", "-"),
-            "age": age_in_human_readable(m.creation_timestamp),
+            "age": age_in_human_readable(p.metadata.creation_timestamp),
             "status_icon": status_emoji(p.status.phase)
         })
     return pd.DataFrame(data)
@@ -117,13 +116,12 @@ def get_deployments():
     deps = safe_list(apps.list_deployment_for_all_namespaces)
     data = []
     for d in deps:
-        m = d.metadata
-        ns = getattr(m, "namespace", "-")
+        ns = d.metadata.namespace
         if namespace_filter and ns != namespace_filter:
             continue
         data.append({
             "namespace": ns,
-            "name": m.name,
+            "name": d.metadata.name,
             "replicas": d.status.replicas or 0,
             "available": d.status.available_replicas or 0,
         })
@@ -134,15 +132,109 @@ def get_nodes():
     nodes = safe_list(core.list_node)
     data = []
     for n in nodes:
-        m = n.metadata
         conds = {c.type: c.status for c in n.status.conditions or []}
         ready = conds.get("Ready", "Unknown")
         data.append({
-            "name": m.name,
+            "name": n.metadata.name,
             "status": ready,
             "status_icon": status_emoji(ready),
-            "age": age_in_human_readable(m.creation_timestamp),
+            "age": age_in_human_readable(n.metadata.creation_timestamp),
         })
+    return pd.DataFrame(data)
+
+
+def get_services():
+    svcs = safe_list(core.list_service_for_all_namespaces)
+    data = [{"namespace": s.metadata.namespace,
+             "name": s.metadata.name,
+             "type": s.spec.type,
+             "cluster_ip": s.spec.cluster_ip}
+            for s in svcs if not namespace_filter or s.metadata.namespace == namespace_filter]
+    return pd.DataFrame(data)
+
+
+def get_configmaps():
+    cms = safe_list(core.list_config_map_for_all_namespaces)
+    data = [{"namespace": cm.metadata.namespace,
+             "name": cm.metadata.name,
+             "age": age_in_human_readable(cm.metadata.creation_timestamp)}
+            for cm in cms if not namespace_filter or cm.metadata.namespace == namespace_filter]
+    return pd.DataFrame(data)
+
+
+def get_secrets():
+    secrets = safe_list(core.list_secret_for_all_namespaces)
+    data = [{"namespace": s.metadata.namespace,
+             "name": s.metadata.name,
+             "type": s.type}
+            for s in secrets if not namespace_filter or s.metadata.namespace == namespace_filter]
+    return pd.DataFrame(data)
+
+
+def get_statefulsets():
+    ss = safe_list(apps.list_stateful_set_for_all_namespaces)
+    data = [{"namespace": s.metadata.namespace,
+             "name": s.metadata.name,
+             "replicas": s.status.replicas or 0,
+             "ready": s.status.ready_replicas or 0}
+            for s in ss if not namespace_filter or s.metadata.namespace == namespace_filter]
+    return pd.DataFrame(data)
+
+
+def get_daemonsets():
+    ds = safe_list(apps.list_daemon_set_for_all_namespaces)
+    data = [{"namespace": d.metadata.namespace,
+             "name": d.metadata.name,
+             "desired": d.status.desired_number_scheduled or 0,
+             "current": d.status.current_number_scheduled or 0}
+            for d in ds if not namespace_filter or d.metadata.namespace == namespace_filter]
+    return pd.DataFrame(data)
+
+
+def get_jobs():
+    jobs = safe_list(batch.list_job_for_all_namespaces)
+    data = [{"namespace": j.metadata.namespace,
+             "name": j.metadata.name,
+             "succeeded": j.status.succeeded or 0,
+             "failed": j.status.failed or 0}
+            for j in jobs if not namespace_filter or j.metadata.namespace == namespace_filter]
+    return pd.DataFrame(data)
+
+
+def get_cronjobs():
+    cronjobs = safe_list(batch.list_cron_job_for_all_namespaces)
+    data = [{"namespace": c.metadata.namespace,
+             "name": c.metadata.name,
+             "schedule": c.spec.schedule}
+            for c in cronjobs if not namespace_filter or c.metadata.namespace == namespace_filter]
+    return pd.DataFrame(data)
+
+
+def get_persistent_volumes():
+    pvs = safe_list(core.list_persistent_volume)
+    data = [{
+        "name": pv.metadata.name,
+        "capacity": pv.spec.capacity.get("storage") if pv.spec.capacity else "-",
+        "status": pv.status.phase,
+        "reclaim_policy": pv.spec.persistent_volume_reclaim_policy,
+        "age": age_in_human_readable(pv.metadata.creation_timestamp),
+        "status_icon": status_emoji(pv.status.phase)
+    } for pv in pvs]
+    return pd.DataFrame(data)
+
+
+def get_persistent_volume_claims():
+    pvcs = safe_list(core.list_persistent_volume_claim_for_all_namespaces)
+    data = [{
+        "namespace": pvc.metadata.namespace,
+        "name": pvc.metadata.name,
+        "status": pvc.status.phase,
+        "volume": pvc.spec.volume_name,
+        "storage": pvc.spec.resources.requests.get(
+            "storage") if pvc.spec.resources and pvc.spec.resources.requests else "-",
+        "age": age_in_human_readable(pvc.metadata.creation_timestamp),
+        "status_icon": status_emoji(pvc.status.phase)
+    } for pvc in pvcs if not namespace_filter or pvc.metadata.namespace == namespace_filter]
     return pd.DataFrame(data)
 
 
@@ -154,15 +246,31 @@ with tab_overview:
     pods_df = get_pods()
     nodes_df = get_nodes()
     deps_df = get_deployments()
+    svc_df = get_services()
+    cm_df = get_configmaps()
+    sec_df = get_secrets()
+    ss_df = get_statefulsets()
+    ds_df = get_daemonsets()
+    jobs_df = get_jobs()
+    cron_df = get_cronjobs()
+    pvs_df = get_persistent_volumes()
+    pvcs_df = get_persistent_volume_claims()
 
     st.subheader("Cluster Summary")
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1, c2, c3, c4, c5, c6, c7, c8, c9, c10 = st.columns(10)
     c1.metric("Total Pods", len(pods_df))
     c2.metric("🟢 Running", len(pods_df[pods_df["status"] == "Running"]))
     c3.metric("🟡 Pending", len(pods_df[pods_df["status"] == "Pending"]))
     c4.metric("🔴 Failed", len(pods_df[pods_df["status"] == "Failed"]))
     c5.metric("Nodes Ready/Total", f"{len(nodes_df[nodes_df['status'] == 'True'])}/{len(nodes_df)}")
     c6.metric("Deployments", len(deps_df))
+    c7.metric("StatefulSets", len(ss_df))
+    c8.metric("DaemonSets", len(ds_df))
+    c9.metric("Services", len(svc_df))
+    c10.metric("ConfigMaps", len(cm_df))
+    c11, c12 = st.columns(2)
+    c11.metric("PersistentVolumes", len(pvs_df))
+    c12.metric("PersistentVolumeClaims", len(pvcs_df))
 
     st.divider()
     st.subheader("Pods per Namespace")
@@ -173,14 +281,28 @@ with tab_overview:
 
 # --- Resources Tab ---
 with tab_resources:
-    resource_type = st.selectbox("Select a resource", ["Pods", "Deployments", "Nodes"])
-    if resource_type == "Pods":
-        df = pods_df
-    elif resource_type == "Deployments":
-        df = deps_df
-    else:
-        df = nodes_df
+    resource_type = st.selectbox("Select a resource", [
+        "Pods", "Deployments", "Nodes", "StatefulSets", "DaemonSets",
+        "Services", "ConfigMaps", "Secrets", "Jobs", "CronJobs",
+        "PersistentVolumes", "PersistentVolumeClaims"
+    ])
 
+    resource_map = {
+        "Pods": pods_df,
+        "Deployments": deps_df,
+        "Nodes": nodes_df,
+        "StatefulSets": ss_df,
+        "DaemonSets": ds_df,
+        "Services": svc_df,
+        "ConfigMaps": cm_df,
+        "Secrets": sec_df,
+        "Jobs": jobs_df,
+        "CronJobs": cron_df,
+        "PersistentVolumes": pvs_df,
+        "PersistentVolumeClaims": pvcs_df
+    }
+
+    df = resource_map.get(resource_type, pd.DataFrame())
     if not df.empty:
         st.dataframe(df, use_container_width=True)
     else:
@@ -189,7 +311,6 @@ with tab_resources:
 # --- Prometheus Metrics Tab ---
 with tab_metrics:
     st.subheader("Resource Usage Metrics")
-    # Time range controls
     time_range = st.slider("Time range (minutes)", 5, 120, 30)
     step = st.selectbox("Step (seconds)", [15, 30, 60], index=1)
 
@@ -198,13 +319,14 @@ with tab_metrics:
     start = int(start_time.timestamp())
     end = int(end_time.timestamp())
 
-    # --- CPU usage per namespace (range) ---
+    # CPU usage
     st.markdown("### 🔹 CPU Usage (cores per namespace)")
     cpu_query = 'sum(rate(container_cpu_usage_seconds_total{image!=""}[5m])) by (namespace)'
     cpu_results = query_prometheus_range(prom_url, cpu_query, start, end, step)
     if cpu_results:
         df_cpu = pd.DataFrame([
-            {"time": datetime.fromtimestamp(float(v[0])), "namespace": r["metric"].get("namespace", "unknown"),
+            {"time": datetime.fromtimestamp(float(v[0])),
+             "namespace": r["metric"].get("namespace", "unknown"),
              "cpu_cores": float(v[1])}
             for r in cpu_results for v in r["values"]
         ])
@@ -213,13 +335,14 @@ with tab_metrics:
     else:
         st.info("No CPU metrics found.")
 
-    # --- Memory usage per namespace (range) ---
+    # Memory usage
     st.markdown("### 🔹 Memory Usage (MB per namespace)")
     mem_query = 'sum(container_memory_usage_bytes{image!=""}) by (namespace)'
     mem_results = query_prometheus_range(prom_url, mem_query, start, end, step)
     if mem_results:
         df_mem = pd.DataFrame([
-            {"time": datetime.fromtimestamp(float(v[0])), "namespace": r["metric"].get("namespace", "unknown"),
+            {"time": datetime.fromtimestamp(float(v[0])),
+             "namespace": r["metric"].get("namespace", "unknown"),
              "memory_mb": float(v[1]) / 1024 / 1024}
             for r in mem_results for v in r["values"]
         ])
@@ -232,6 +355,3 @@ with tab_metrics:
 time.sleep(refresh_interval)
 if manual_refresh:
     st.rerun()
-
-# TODO: check for Prometheus availability and show appropriate messages
-
