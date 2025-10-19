@@ -24,7 +24,10 @@ st.title("☸️ Kubernetes Cluster Dashboard")
 # --- Sidebar ---
 st.sidebar.header("Settings")
 namespace_filter = st.sidebar.text_input("Namespace filter (optional)", "")
-prom_url = st.sidebar.text_input("Prometheus URL", "http://localhost:9090")
+prom_url = st.sidebar.text_input(
+    "Prometheus URL",
+    "http://prometheus-kube-prometheus-prometheus.prometheus.svc.cluster.local:9090"
+)
 refresh_interval = st.sidebar.slider("Auto-refresh interval (seconds)", 10, 120, 30)
 manual_refresh = st.sidebar.button("🔄 Refresh now")
 
