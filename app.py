@@ -326,24 +326,37 @@ with tab_metrics:
     else:
         st.info("No CPU metrics found.")
 
-    # Memory usage
+    # 🔹 Memory usage (MB per namespace)
     st.markdown("### 🔹 Memory Usage (MB per namespace)")
-    # That query calculates the total actual memory currently used by each container, grouped by its namespace,
-    # pod, and container name — even though the base memory metric itself doesn’t directly include the namespace label.
-    # It does this by joining the raw container memory usage data (container_memory_working_set_bytes) with pod metadata
-    # from kube_pod_info to pull in the missing namespace information, then summing the results per namespace, pod,
-    # and container.
-    mem_query = 'sum by (namespace, pod, container) (container_memory_working_set_bytes * on(pod) group_left(namespace) kube_pod_info)'
+
+    # Use the correct Prometheus query: total memory per namespace
+    mem_query = 'sum by (namespace) (container_memory_working_set_bytes * on(pod) group_left(namespace) kube_pod_info)'
+
+    # Query the Prometheus API
     mem_results = query_prometheus_range(prom_url, mem_query, start, end, step)
+
+    # Process results
     if mem_results:
         df_mem = pd.DataFrame([
-            {"time": datetime.fromtimestamp(float(v[0])),
-             "namespace": r["metric"].get("namespace", "unknown"),
-             "memory_mb": float(v[1]) / 1024 / 1024}
+            {
+                "time": datetime.fromtimestamp(float(v[0])),
+                "namespace": r["metric"].get("namespace", "unknown"),
+                "memory_mb": float(v[1]) / 1024 / 1024,  # convert bytes → MB
+            }
             for r in mem_results for v in r["values"]
         ])
-        fig_mem = px.line(df_mem, x="time", y="memory_mb", color="namespace", title="Memory Usage Trend")
+
+        # Plot memory usage trend per namespace
+        fig_mem = px.line(
+            df_mem,
+            x="time",
+            y="memory_mb",
+            color="namespace",
+            title="Memory Usage Trend (per Namespace)",
+            labels={"memory_mb": "Memory (MB)", "time": "Time"}
+        )
         st.plotly_chart(fig_mem, use_container_width=True)
+
     else:
         st.info("No memory metrics found.")
 
