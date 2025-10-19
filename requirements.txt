@@ -1,3 +1,4 @@
+pytest
 streamlit
 kubernetes
 pandas
