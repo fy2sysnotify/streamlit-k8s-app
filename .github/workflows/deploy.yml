@@ -50,11 +50,11 @@ jobs:
           DEFAULT_BRANCH=$(git remote show origin | grep "HEAD branch" | cut -d ":" -f2 | tr -d ' ')
           git checkout $DEFAULT_BRANCH
 
-          sed -i "s|image: ghcr.io/.*/streamlit-app:.*|image: $IMAGE_NAME|g" k8s-dashboard-deployment.yaml
+          sed -i "s|image: ghcr.io/.*/streamlit-app:.*|image: $IMAGE_NAME|g" base/k8s-dashboard-deployment.yaml
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git add k8s-dashboard-deployment.yaml
+          git add base/k8s-dashboard-deployment.yaml
           git commit -m "Update Deployment image to $IMAGE_TAG" || echo "No changes to commit"
           git push origin $DEFAULT_BRANCH
