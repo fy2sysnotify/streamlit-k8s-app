@@ -1,0 +1,37 @@
+name: Orchestrator
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+jobs:
+  lint:
+    uses: ./.github/workflows/lint.yml
+
+  security:
+    needs: lint
+    uses: ./.github/workflows/security.yml
+
+  tests:
+    needs: security
+    uses: ./.github/workflows/tests.yml
+
+  docker:
+    needs: tests
+    uses: ./.github/workflows/docker_build.yml
+    secrets:
+      GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+
+  deploy:
+    needs: docker
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/deploy.yml
+    secrets:
+      GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
+    with:
+      image-tag: ${{ needs.docker.outputs.image-tag }}

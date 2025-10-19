@@ -1,0 +1,60 @@
+name: Deploy to Environment
+
+on:
+  workflow_call:
+    inputs:
+      image-tag:
+        description: "Docker image tag"
+        required: true
+        type: string
+    secrets:
+      GHCR_TOKEN:
+        required: true
+      GH_TOKEN:
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_TOKEN }}
+
+      - name: Pull Docker image
+        run: |
+          IMAGE_TAG=${{ inputs.image-tag }}
+          IMAGE_NAME="ghcr.io/${GITHUB_REPOSITORY_OWNER}/streamlit-app:${IMAGE_TAG}"
+          docker pull $IMAGE_NAME
+
+      - name: Update k8s-dashboard-deployment.yaml in streamlit-k8s-infra
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          IMAGE_TAG=${{ inputs.image-tag }}
+          IMAGE_NAME="ghcr.io/${GITHUB_REPOSITORY_OWNER}/streamlit-app:${IMAGE_TAG}"
+
+          sudo apt-get update && sudo apt-get install -y git
+
+          git clone https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY_OWNER}/streamlit-k8s-infra.git
+          cd streamlit-k8s-infra
+
+          # Detect default branch (could be main or master)
+          DEFAULT_BRANCH=$(git remote show origin | grep "HEAD branch" | cut -d ":" -f2 | tr -d ' ')
+          git checkout $DEFAULT_BRANCH
+
+          sed -i "s|image: ghcr.io/.*/streamlit-app:.*|image: $IMAGE_NAME|g" k8s-dashboard-deployment.yaml
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add k8s-dashboard-deployment.yaml
+          git commit -m "Update Deployment image to $IMAGE_TAG" || echo "No changes to commit"
+          git push origin $DEFAULT_BRANCH

@@ -1,0 +1,35 @@
+name: Security Checks
+
+on:
+  workflow_call:
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+
+      - name: Install security dependencies
+        run: |
+          python -m venv venv
+          source venv/bin/activate
+          pip install --upgrade "pip==24.0" setuptools bandit pip-audit
+
+      - name: Run security scans
+        run: |
+          source venv/bin/activate
+          bandit -r app.py
+          pip-audit || true
