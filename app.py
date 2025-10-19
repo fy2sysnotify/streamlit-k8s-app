@@ -310,6 +310,8 @@ with tab_metrics:
 
     # CPU usage
     st.markdown("### 🔹 CPU Usage (cores per namespace)")
+    # Calculates the average CPU usage (in cores) for each namespace over the last 5 minutes.
+    # It measures how much CPU time containers in the same namespace are consuming, summed together.
     cpu_query = 'sum by (namespace) (rate(container_cpu_usage_seconds_total{container!="",pod!=""}[5m]))'
     cpu_results = query_prometheus_range(prom_url, cpu_query, start, end, step)
     if cpu_results:
@@ -326,7 +328,12 @@ with tab_metrics:
 
     # Memory usage
     st.markdown("### 🔹 Memory Usage (MB per namespace)")
-    mem_query = 'sum(container_memory_usage_bytes{image!=""}) by (namespace)'
+    # That query calculates the total actual memory currently used by each container, grouped by its namespace,
+    # pod, and container name — even though the base memory metric itself doesn’t directly include the namespace label.
+    # It does this by joining the raw container memory usage data (container_memory_working_set_bytes) with pod metadata
+    # from kube_pod_info to pull in the missing namespace information, then summing the results per namespace, pod,
+    # and container.
+    mem_query = 'sum by (namespace, pod, container) (container_memory_working_set_bytes * on(pod) group_left(namespace) kube_pod_info)'
     mem_results = query_prometheus_range(prom_url, mem_query, start, end, step)
     if mem_results:
         df_mem = pd.DataFrame([
