@@ -65,7 +65,7 @@ def safe_list(func, namespace=None):
             return func(namespace=namespace).items
         return func().items
     except ApiException as e:
-        st.error(f"Unable to fetch resources: {e.reason}")
+        st.error(f"Unable to fetch resources ({func.__name__}): {e.reason}")
         return []
 
 
