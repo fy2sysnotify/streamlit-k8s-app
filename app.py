@@ -229,3 +229,5 @@ with tab_metrics:
 time.sleep(refresh_interval)
 if manual_refresh:
     st.rerun()
+
+# TODO: check for Prometheus availability and show appropriate messages
