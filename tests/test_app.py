@@ -10,9 +10,9 @@ from typing import Any, List
 #             Mock Kubernetes Config at Import
 # ============================================================
 # Prevents tests from failing due to missing kube-config or cluster
-with (patch("app.safe_list", return_value=[]),
-      patch("kubernetes.config.load_incluster_config"),
-      patch("kubernetes.config.load_kube_config")):
+with (patch("kubernetes.config.load_incluster_config"),
+      patch("kubernetes.config.load_kube_config"),
+      patch("app.safe_list", return_value=[])):
     import app
 
 
