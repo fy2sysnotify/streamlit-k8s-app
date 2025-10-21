@@ -5,35 +5,83 @@ import plotly.express as px
 from datetime import datetime, timezone, timedelta, UTC
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
+import logging
+import json
+import sys
 import time
+from typing import List, Any, Dict, Optional
 
-# --- Load Kubernetes config ---
+
+# --------------------------------------------------
+# ✅ JSON Logging Configuration (Kubernetes-Friendly)
+# --------------------------------------------------
+class JsonFormatter(logging.Formatter):
+    """
+    Custom logging formatter that outputs JSON objects for machine-readable logs.
+    Compatible with Loki, ELK, Datadog, etc.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        log_record = {
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        if record.exc_info:
+            log_record["exception"] = self.formatException(record.exc_info)
+        return json.dumps(log_record)
+
+
+# Configure global logger
+handler = logging.StreamHandler(sys.stdout)
+handler.setFormatter(JsonFormatter())
+
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+root_logger.handlers = [handler]
+
+logger = logging.getLogger("k8s-dashboard")
+
+# --------------------------------------------------
+# Load Kubernetes configuration
+# --------------------------------------------------
 try:
     config.load_incluster_config()
-except:
+    logger.info("Loaded in-cluster Kubernetes configuration.")
+except Exception:
     config.load_kube_config()
+    logger.info("Loaded local kubeconfig (fallback).")
 
+# Initialize Kubernetes API clients
 core = client.CoreV1Api()
 apps = client.AppsV1Api()
 batch = client.BatchV1Api()
 
-# --- Streamlit config ---
+# --------------------------------------------------
+# Streamlit page setup
+# --------------------------------------------------
 st.set_page_config(page_title="Kubernetes Dashboard", layout="wide")
 st.title("☸️ Kubernetes Cluster Dashboard")
 
-# --- Sidebar ---
+# --- Sidebar controls ---
 st.sidebar.header("Settings")
-namespace_filter = st.sidebar.text_input("Namespace filter (optional)", "")
-prom_url = st.sidebar.text_input(
+namespace_filter: str = st.sidebar.text_input("Namespace filter (optional)", "")
+prom_url: str = st.sidebar.text_input(
     "Prometheus URL",
     "http://prometheus-kube-prometheus-prometheus.prometheus.svc.cluster.local:9090"
 )
-refresh_interval = st.sidebar.slider("Auto-refresh interval (seconds)", 10, 120, 30)
-manual_refresh = st.sidebar.button("🔄 Refresh now")
+refresh_interval: int = st.sidebar.slider("Auto-refresh interval (seconds)", 10, 120, 30)
+manual_refresh: bool = st.sidebar.button("🔄 Refresh now")
 
 
-# --- Utility functions ---
-def age_in_human_readable(ts):
+# --------------------------------------------------
+# Utility Functions
+# --------------------------------------------------
+def age_in_human_readable(ts: Optional[datetime]) -> str:
+    """
+    Convert a datetime timestamp into a human-readable age string.
+    """
     if not ts:
         return "-"
     delta = datetime.now(timezone.utc) - ts
@@ -48,7 +96,10 @@ def age_in_human_readable(ts):
         return f"{minutes}m"
 
 
-def status_emoji(status):
+def status_emoji(status: str) -> str:
+    """
+    Return an emoji representing resource status.
+    """
     if status in ("Running", "Active", "True", "Ready", "Succeeded", "Bound"):
         return "🟢"
     elif status in ("Pending", "Creating", "ContainerCreating"):
@@ -59,42 +110,72 @@ def status_emoji(status):
         return "⚪️"
 
 
-def safe_list(func, namespace=None):
+def safe_list(func: Any, namespace: Optional[str] = None) -> List[Any]:
+    """
+    Safely call a Kubernetes list function, handling exceptions gracefully.
+    """
     try:
         if namespace and namespace != "All":
+            logger.debug(f"Listing with {func.__name__} in namespace '{namespace}'")
             return func(namespace=namespace).items
+        logger.debug(f"Listing with {func.__name__} across all namespaces")
         return func().items
     except ApiException as e:
+        logger.error(f"Unable to fetch resources ({func.__name__}): {e.reason}")
         st.error(f"Unable to fetch resources ({func.__name__}): {e.reason}")
+        return []
+    except Exception as e:
+        logger.exception(f"Unexpected error in {func.__name__}: {e}")
+        st.error(f"Unexpected error fetching resources ({func.__name__}): {e}")
         return []
 
 
-# --- Prometheus helpers ---
-def query_prometheus(prometheus_url, query):
+# --------------------------------------------------
+# Prometheus Query Helpers
+# --------------------------------------------------
+def query_prometheus(prometheus_url: str, query: str) -> List[Dict[str, Any]]:
+    """
+    Run an instant Prometheus query.
+    """
     try:
+        logger.debug(f"Prometheus instant query: {query}")
         resp = requests.get(f"{prometheus_url}/api/v1/query", params={"query": query}, timeout=5)
         resp.raise_for_status()
         data = resp.json()
-        return data["data"]["result"] if data.get("status") == "success" else []
+        if data.get("status") == "success":
+            return data["data"]["result"]
+        logger.warning(f"Prometheus returned non-success status for instant query: {data.get('status')}")
+        return []
     except Exception as e:
+        logger.error(f"Prometheus query error: {e}")
         st.error(f"Prometheus query error: {e}")
         return []
 
 
-def query_prometheus_range(prometheus_url, query, start, end, step):
+def query_prometheus_range(prometheus_url: str, query: str, start: int, end: int, step: int) -> List[Dict[str, Any]]:
+    """
+    Run a range-based Prometheus query (time series).
+    """
     try:
+        logger.debug(f"Prometheus range query: {query} (start={start}, end={end}, step={step})")
         params = {"query": query, "start": start, "end": end, "step": step}
         resp = requests.get(f"{prometheus_url}/api/v1/query_range", params=params, timeout=10)
         resp.raise_for_status()
         data = resp.json()
-        return data["data"]["result"] if data.get("status") == "success" else []
+        if data.get("status") == "success":
+            return data["data"]["result"]
+        logger.warning(f"Prometheus returned non-success status for range query: {data.get('status')}")
+        return []
     except Exception as e:
+        logger.error(f"Prometheus range query error: {e}")
         st.error(f"Prometheus range query error: {e}")
         return []
 
 
-# --- Kubernetes resource helpers ---
-def get_pods():
+# --------------------------------------------------
+# Kubernetes Resource Fetchers
+# --------------------------------------------------
+def get_pods() -> pd.DataFrame:
     pods = safe_list(core.list_pod_for_all_namespaces)
     data = []
     for p in pods:
@@ -109,10 +190,11 @@ def get_pods():
             "age": age_in_human_readable(p.metadata.creation_timestamp),
             "status_icon": status_emoji(p.status.phase)
         })
+    logger.info(f"Fetched {len(data)} pods (filtered by namespace='{namespace_filter or 'All'}').")
     return pd.DataFrame(data)
 
 
-def get_deployments():
+def get_deployments() -> pd.DataFrame:
     deps = safe_list(apps.list_deployment_for_all_namespaces)
     data = []
     for d in deps:
@@ -125,10 +207,11 @@ def get_deployments():
             "replicas": d.status.replicas or 0,
             "available": d.status.available_replicas or 0,
         })
+    logger.info(f"Fetched {len(data)} deployments (filtered by namespace='{namespace_filter or 'All'}').")
     return pd.DataFrame(data)
 
 
-def get_nodes():
+def get_nodes() -> pd.DataFrame:
     nodes = safe_list(core.list_node)
     data = []
     for n in nodes:
@@ -140,68 +223,75 @@ def get_nodes():
             "status_icon": status_emoji(ready),
             "age": age_in_human_readable(n.metadata.creation_timestamp),
         })
+    logger.info(f"Fetched {len(data)} nodes.")
     return pd.DataFrame(data)
 
 
-def get_services():
+def get_services() -> pd.DataFrame:
     svcs = safe_list(core.list_service_for_all_namespaces)
     data = [{"namespace": s.metadata.namespace,
              "name": s.metadata.name,
              "type": s.spec.type,
              "cluster_ip": s.spec.cluster_ip}
             for s in svcs if not namespace_filter or s.metadata.namespace == namespace_filter]
+    logger.info(f"Fetched {len(data)} services (filtered by namespace='{namespace_filter or 'All'}').")
     return pd.DataFrame(data)
 
 
-def get_configmaps():
+def get_configmaps() -> pd.DataFrame:
     cms = safe_list(core.list_config_map_for_all_namespaces)
     data = [{"namespace": cm.metadata.namespace,
              "name": cm.metadata.name,
              "age": age_in_human_readable(cm.metadata.creation_timestamp)}
             for cm in cms if not namespace_filter or cm.metadata.namespace == namespace_filter]
+    logger.info(f"Fetched {len(data)} configmaps (filtered by namespace='{namespace_filter or 'All'}').")
     return pd.DataFrame(data)
 
 
-def get_statefulsets():
+def get_statefulsets() -> pd.DataFrame:
     ss = safe_list(apps.list_stateful_set_for_all_namespaces)
     data = [{"namespace": s.metadata.namespace,
              "name": s.metadata.name,
              "replicas": s.status.replicas or 0,
              "ready": s.status.ready_replicas or 0}
             for s in ss if not namespace_filter or s.metadata.namespace == namespace_filter]
+    logger.info(f"Fetched {len(data)} statefulsets (filtered by namespace='{namespace_filter or 'All'}').")
     return pd.DataFrame(data)
 
 
-def get_daemonsets():
+def get_daemonsets() -> pd.DataFrame:
     ds = safe_list(apps.list_daemon_set_for_all_namespaces)
     data = [{"namespace": d.metadata.namespace,
              "name": d.metadata.name,
              "desired": d.status.desired_number_scheduled or 0,
              "current": d.status.current_number_scheduled or 0}
             for d in ds if not namespace_filter or d.metadata.namespace == namespace_filter]
+    logger.info(f"Fetched {len(data)} daemonsets (filtered by namespace='{namespace_filter or 'All'}').")
     return pd.DataFrame(data)
 
 
-def get_jobs():
+def get_jobs() -> pd.DataFrame:
     jobs = safe_list(batch.list_job_for_all_namespaces)
     data = [{"namespace": j.metadata.namespace,
              "name": j.metadata.name,
              "succeeded": j.status.succeeded or 0,
              "failed": j.status.failed or 0}
             for j in jobs if not namespace_filter or j.metadata.namespace == namespace_filter]
+    logger.info(f"Fetched {len(data)} jobs (filtered by namespace='{namespace_filter or 'All'}').")
     return pd.DataFrame(data)
 
 
-def get_cronjobs():
+def get_cronjobs() -> pd.DataFrame:
     cronjobs = safe_list(batch.list_cron_job_for_all_namespaces)
     data = [{"namespace": c.metadata.namespace,
              "name": c.metadata.name,
              "schedule": c.spec.schedule}
             for c in cronjobs if not namespace_filter or c.metadata.namespace == namespace_filter]
+    logger.info(f"Fetched {len(data)} cronjobs (filtered by namespace='{namespace_filter or 'All'}').")
     return pd.DataFrame(data)
 
 
-def get_persistent_volumes():
+def get_persistent_volumes() -> pd.DataFrame:
     pvs = safe_list(core.list_persistent_volume)
     data = [{
         "name": pv.metadata.name,
@@ -211,10 +301,11 @@ def get_persistent_volumes():
         "age": age_in_human_readable(pv.metadata.creation_timestamp),
         "status_icon": status_emoji(pv.status.phase)
     } for pv in pvs]
+    logger.info(f"Fetched {len(data)} persistent volumes.")
     return pd.DataFrame(data)
 
 
-def get_persistent_volume_claims():
+def get_persistent_volume_claims() -> pd.DataFrame:
     pvcs = safe_list(core.list_persistent_volume_claim_for_all_namespaces)
     data = [{
         "namespace": pvc.metadata.namespace,
@@ -226,10 +317,13 @@ def get_persistent_volume_claims():
         "age": age_in_human_readable(pvc.metadata.creation_timestamp),
         "status_icon": status_emoji(pvc.status.phase)
     } for pvc in pvcs if not namespace_filter or pvc.metadata.namespace == namespace_filter]
+    logger.info(f"Fetched {len(data)} persistent volume claims (filtered by namespace='{namespace_filter or 'All'}').")
     return pd.DataFrame(data)
 
 
-# --- Tabs ---
+# --------------------------------------------------
+# Streamlit Tabs
+# --------------------------------------------------
 tab_overview, tab_resources, tab_metrics = st.tabs(["📊 Cluster Overview", "📋 Resources", "📈 Prometheus Metrics"])
 
 # --- Cluster Overview Tab ---
@@ -308,10 +402,8 @@ with tab_metrics:
     start = int(start_time.timestamp())
     end = int(end_time.timestamp())
 
-    # CPU usage
+    # CPU Usage
     st.markdown("### 🔹 CPU Usage (cores per namespace)")
-    # Calculates the average CPU usage (in cores) for each namespace over the last 5 minutes.
-    # It measures how much CPU time containers in the same namespace are consuming, summed together.
     cpu_query = 'sum by (namespace) (rate(container_cpu_usage_seconds_total{container!="",pod!=""}[5m]))'
     cpu_results = query_prometheus_range(prom_url, cpu_query, start, end, step)
     if cpu_results:
@@ -326,27 +418,19 @@ with tab_metrics:
     else:
         st.info("No CPU metrics found.")
 
-    # 🔹 Memory usage (MB per namespace)
+    # Memory Usage
     st.markdown("### 🔹 Memory Usage (MB per namespace)")
-
-    # Use the correct Prometheus query: total memory per namespace
     mem_query = 'sum by (namespace) (container_memory_working_set_bytes * on(pod) group_left(namespace) kube_pod_info)'
-
-    # Query the Prometheus API
     mem_results = query_prometheus_range(prom_url, mem_query, start, end, step)
-
-    # Process results
     if mem_results:
         df_mem = pd.DataFrame([
             {
                 "time": datetime.fromtimestamp(float(v[0])),
                 "namespace": r["metric"].get("namespace", "unknown"),
-                "memory_mb": float(v[1]) / 1024 / 1024,  # convert bytes → MB
+                "memory_mb": float(v[1]) / 1024 / 1024,
             }
             for r in mem_results for v in r["values"]
         ])
-
-        # Plot memory usage trend per namespace
         fig_mem = px.line(
             df_mem,
             x="time",
@@ -356,11 +440,12 @@ with tab_metrics:
             labels={"memory_mb": "Memory (MB)", "time": "Time"}
         )
         st.plotly_chart(fig_mem, use_container_width=True)
-
     else:
         st.info("No memory metrics found.")
 
 # --- Auto-refresh ---
+logger.info(f"Sleeping for {refresh_interval} seconds before potential refresh.")
 time.sleep(refresh_interval)
 if manual_refresh:
+    logger.info("Manual refresh triggered by user.")
     st.rerun()
